@@ -4,7 +4,7 @@ set -o nounset
 set -o pipefail
 
 # Automatically update your CloudFlare DNS record to the IP, Dynamic DNS
-# Can retrieve cloudflare Domain id and list zone's, because, lazy
+# Uses Cloudflare API Token (with Zone:DNS:Edit permissions) for enhanced security
 
 # Place at:
 # curl https://raw.githubusercontent.com/aipeach/cloudflare-api-v4-ddns/dev/cf-v4-ddns.sh > /usr/local/bin/cf-ddns.sh && chmod +x /usr/local/bin/cf-ddns.sh
@@ -15,25 +15,29 @@ set -o pipefail
 
 
 # Usage:
-# cf-ddns.sh -k cloudflare-api-key \
-#            -h host.example.com \     # fqdn of the record you want to update
-#            -z example.com \          # will show you all zones if forgot, but you need this
-#            -t A|AAAA                 # specify ipv4/ipv6, default: ipv4
+# cf-ddns.sh -k cloudflare-api-token \
+#            -i zone-id \              # zone ID (required with API token)
+#            -h host.example.com \     # fqdn or subdomain of the record you want to update
+#            -t A|AAAA \               # specify ipv4/ipv6, default: ipv4
+#            -c "comment text"         # optional comment for the DNS record
 
 # Optional flags:
 #            -f false|true \           # force dns update, disregard local stored ip
 
 # default config
 
-# API key, see https://dash.cloudflare.com/profile/api-tokens,
-# incorrect api-key results in E_UNAUTH error
-CFKEY=
+# API token, create at https://dash.cloudflare.com/profile/api-tokens
+# Create a token with Zone:DNS:Edit permissions for specific zones
+CFTOKEN=
 
-# Zone name, eg: example.com
-CFZONE_NAME=
+# Zone ID, found in the Cloudflare dashboard overview page
+CFZONE_ID=
 
-# Hostname to update, eg: homeserver.example.com
+# Hostname or subdomain to update, eg: homeserver or homeserver.example.com
 CFRECORD_NAME=
+
+# Comment for the DNS record (optional)
+CFRECORD_COMMENT=""
 
 # Record type, A(IPv4)|AAAA(IPv6), default IPv4
 CFRECORD_TYPE=A
@@ -57,32 +61,33 @@ else
 fi
 
 # get parameter
-while getopts k:h:z:t:f: opts; do
+while getopts k:i:h:t:c:f: opts; do
   case ${opts} in
-    k) CFKEY=${OPTARG} ;;
+    k) CFTOKEN=${OPTARG} ;;
+    i) CFZONE_ID=${OPTARG} ;;
     h) CFRECORD_NAME=${OPTARG} ;;
-    z) CFZONE_NAME=${OPTARG} ;;
     t) CFRECORD_TYPE=${OPTARG} ;;
+    c) CFRECORD_COMMENT=${OPTARG} ;;
     f) FORCE=${OPTARG} ;;
   esac
 done
 
 # If required settings are missing just exit
-if [ "$CFKEY" = "" ]; then
-  echo "Missing api-key, get at: https://www.cloudflare.com/a/account/my-account"
+if [ "$CFTOKEN" = "" ]; then
+  echo "Missing API token, create at: https://dash.cloudflare.com/profile/api-tokens"
+  echo "You need a token with Zone:DNS:Edit permissions for your zone"
   echo "and save in ${0} or using the -k flag"
+  exit 2
+fi
+if [ "$CFZONE_ID" = "" ]; then
+  echo "Missing Zone ID, find it in the Cloudflare dashboard overview page"
+  echo "and save in ${0} or using the -i flag"
   exit 2
 fi
 if [ "$CFRECORD_NAME" = "" ]; then 
   echo "Missing hostname, what host do you want to update?"
   echo "save in ${0} or using the -h flag"
   exit 2
-fi
-
-# If the hostname is not a FQDN
-if [ "$CFRECORD_NAME" != "$CFZONE_NAME" ] && ! [ -z "${CFRECORD_NAME##*$CFZONE_NAME}" ]; then
-  CFRECORD_NAME="$CFRECORD_NAME.$CFZONE_NAME"
-  echo " => Hostname is not a FQDN, assuming $CFRECORD_NAME"
 fi
 
 # Get current and old WAN ip
@@ -101,30 +106,55 @@ if [ "$WAN_IP" = "$OLD_WAN_IP" ] && [ "$FORCE" = false ]; then
   exit 0
 fi
 
-# Get zone_identifier & record_identifier
+# Get record_identifier
 ID_FILE=$HOME/.cf-id_$CFRECORD_NAME.txt
-if [ -f $ID_FILE ] && [ $(wc -l $ID_FILE | cut -d " " -f 1) == 4 ] \
-  && [ "$(sed -n '3,1p' "$ID_FILE")" == "$CFZONE_NAME" ] \
-  && [ "$(sed -n '4,1p' "$ID_FILE")" == "$CFRECORD_NAME" ]; then
-    CFZONE_ID=$(sed -n '1,1p' "$ID_FILE")
-    CFRECORD_ID=$(sed -n '2,1p' "$ID_FILE")
+if [ -f $ID_FILE ] && [ $(wc -l $ID_FILE | cut -d " " -f 1) == 2 ] \
+  && [ "$(sed -n '2,1p' "$ID_FILE")" == "$CFZONE_ID" ]; then
+    CFRECORD_ID=$(sed -n '1,1p' "$ID_FILE")
 else
-    echo "Updating zone_identifier & record_identifier"
-    CFZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$CFZONE_NAME" -H "Authorization: Bearer $CFKEY" -H "Content-Type: application/json" | grep -Eo '"id":"[^"]*'|sed 's/"id":"//' | head -1 )
-    CFRECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CFZONE_ID/dns_records?name=$CFRECORD_NAME" -H "Authorization: Bearer $CFKEY" -H "Content-Type: application/json"  | grep -Eo '"id":"[^"]*'|sed 's/"id":"//' | head -1 )
-    echo "$CFZONE_ID" > $ID_FILE
-    echo "$CFRECORD_ID" >> $ID_FILE
-    echo "$CFZONE_NAME" >> $ID_FILE
-    echo "$CFRECORD_NAME" >> $ID_FILE
+    echo "Updating record_identifier"
+    # First try with the assumption CFRECORD_NAME is a fully qualified domain name
+    CFRECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CFZONE_ID/dns_records?name=$CFRECORD_NAME" -H "Authorization: Bearer $CFTOKEN" -H "Content-Type: application/json" | grep -Eo '"id":"[^"]*'|sed 's/"id":"//' | head -1 )
+    
+    # If not found, try getting zone name and appending record name to it
+    if [ -z "$CFRECORD_ID" ]; then
+        ZONE_NAME=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CFZONE_ID" -H "Authorization: Bearer $CFTOKEN" -H "Content-Type: application/json" | grep -Eo '"name":"[^"]*'|sed 's/"name":"//' | head -1 )
+        if [ -n "$ZONE_NAME" ]; then
+            FQDN_RECORD="$CFRECORD_NAME.$ZONE_NAME"
+            echo "Trying with FQDN: $FQDN_RECORD"
+            CFRECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CFZONE_ID/dns_records?name=$FQDN_RECORD" -H "Authorization: Bearer $CFTOKEN" -H "Content-Type: application/json" | grep -Eo '"id":"[^"]*'|sed 's/"id":"//' | head -1 )
+            
+            # If found, update CFRECORD_NAME to FQDN
+            if [ -n "$CFRECORD_ID" ]; then
+                CFRECORD_NAME=$FQDN_RECORD
+            fi
+        fi
+    fi
+    
+    # If still not found, exit
+    if [ -z "$CFRECORD_ID" ]; then
+        echo "Error: Could not find DNS record with name $CFRECORD_NAME in zone $CFZONE_ID"
+        exit 1
+    fi
+    
+    echo "$CFRECORD_ID" > $ID_FILE
+    echo "$CFZONE_ID" >> $ID_FILE
 fi
 
 # If WAN is changed, update cloudflare
 echo "Updating DNS to $WAN_IP"
 
+# Build JSON data based on whether comment is provided
+if [ -n "$CFRECORD_COMMENT" ]; then
+    JSON_DATA="{\"type\":\"$CFRECORD_TYPE\",\"name\":\"$CFRECORD_NAME\",\"content\":\"$WAN_IP\",\"ttl\":$CFTTL,\"comment\":\"$CFRECORD_COMMENT\"}"
+else
+    JSON_DATA="{\"type\":\"$CFRECORD_TYPE\",\"name\":\"$CFRECORD_NAME\",\"content\":\"$WAN_IP\",\"ttl\":$CFTTL}"
+fi
+
 RESPONSE=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$CFZONE_ID/dns_records/$CFRECORD_ID" \
-  -H "Authorization: Bearer $CFKEY" \
+  -H "Authorization: Bearer $CFTOKEN" \
   -H "Content-Type: application/json" \
-  --data "{\"id\":\"$CFZONE_ID\",\"type\":\"$CFRECORD_TYPE\",\"name\":\"$CFRECORD_NAME\",\"content\":\"$WAN_IP\", \"ttl\":$CFTTL}")
+  --data "$JSON_DATA")
 
 if [ "$RESPONSE" != "${RESPONSE%success*}" ] && [ "$(echo $RESPONSE | grep "\"success\":true")" != "" ]; then
   echo "Updated succesfuly!"

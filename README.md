@@ -12,7 +12,7 @@
 ### 下载脚本
 
 ```
-curl https://raw.githubusercontent.com/aipeach/cloudflare-api-v4-ddns/master/cf-v4-ddns.sh > /root/cf-v4-ddns.sh && chmod +x /root/cf-v4-ddns.sh
+curl https://raw.githubusercontent.com/l1ngth6/cloudflare-api-v4-ddns/master/cf-v4-ddns.sh > /root/cf-v4-ddns.sh && chmod +x /root/cf-v4-ddns.sh
 ```
 
 ### 修改脚本 补充信息

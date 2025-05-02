@@ -22,8 +22,8 @@ CFRECORD_COMMENT=""
 # Record type, A(IPv4)|AAAA(IPv6), default IPv4
 CFRECORD_TYPE=A
 
-# Cloudflare TTL for record, between 120 and 86400 seconds
-CFTTL=60
+# Cloudflare TTL for record, between 60 and 86400 seconds
+CFTTL=120
 
 # Ignore local file, update ip anyway
 FORCE=false

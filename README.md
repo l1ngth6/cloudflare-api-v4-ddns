@@ -31,7 +31,7 @@ CFTOKEN=
 CFZONE_ID=
 
 # Hostname or subdomain to update, eg: homeserver or homeserver.example.com
-# 通常填写需要使用的子域名
+# 通常填写需要使用的完整子域名
 CFRECORD_NAME=
 
 # Comment for the DNS record (optional)
